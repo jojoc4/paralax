@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Logo GSGS parallaxe</title>
+
+    <script type="text/javascript" src="glMatrix-0.9.5.min.js"></script>
+    <script type="text/javascript" src="webgl-utils.js"></script>
+    <script type="text/javascript" src="commonFunctions.js"></script>
+
+    <!-- Vertex Shader: Projects the 3D world points into the 2D camera view. -->
+    <script id="shader-vs" type="x-shader/x-vertex">
+        // Input variables
+        attribute vec3 aVertexPosition;
+        attribute vec2 aTextureCoord;
+
+        uniform mat4 uMVMatrix; // Model View Matrix: Used to change the 3D coordinates from world to camera view.
+        uniform mat4 uPMatrix; // Projection Matrix; Used to project 3D coordinates into 2D coordinates.
+
+        // Output variables
+        varying vec2 vTextureCoord;
+
+        void main(void) {
+            gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+            vTextureCoord = aTextureCoord;
+        }
+    </script>
+
+    <!-- Fragment Shader: Sets the right color for every fragment (pixel). -->
+    <script id="shader-fs" type="x-shader/x-fragment">
+        precision mediump float;
+        varying vec2 vTextureCoord;
+
+        uniform sampler2D uSampler; // Sampler is the shader's way of representing the texture.
+        uniform bool ubText; // Stores if we are currently displaying a pixel.
+
+        void main(void) {
+            float s = vTextureCoord.s;
+            float t = vTextureCoord.t;
+            vec4 texelColor = texture2D(uSampler, vec2(s, t)); // gets the appropriate color from texture using coordinates (s, t)
+            gl_FragColor = texelColor;
+        }
+    </script>
+
+    <script type="text/javascript">
+
+        //global parameters
+        var GlobalMouseSpeed = 1;
+        var Layer1SpeedFactor = 2;
+        var Layer2SpeedFactor = 0.65;
+        var Layer3SpeedFactor = 0.4;
+        var Layer4SpeedFactor = 0.15;
+        var GlobalGyroSpeed = 220;
+
+
+        function initShaderParameters() {
+            // Bridge between CPU and GPU
+            shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+            gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
+
+            shaderProgram.textureCoordAttribute = gl.getAttribLocation(shaderProgram, "aTextureCoord");
+            gl.enableVertexAttribArray(shaderProgram.textureCoordAttribute);
+
+            shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+            shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+            shaderProgram.ubTextUniform = gl.getUniformLocation(shaderProgram, "ubText");
+        }
+
+        var vertexBuffer;
+        var indexBuffer;
+        var textureCoordBuffer;
+
+        function initBuffers() {
+            var vertices = [
+                -1.0, -1.0, 0.0,
+                1.0, -1.0, 0.0,
+                1.0, 1.0, 0.0,
+                -1.0, 1.0, 0.0
+            ];
+            vertexBuffer = constructVertexBuffer(vertices.map(function (x) { return x * 1.1 }));
+
+            var textureC = [
+                0.0, 0.0,
+                1.0, 0.0,
+                1.0, 1.0,
+                0.0, 1.0
+            ];
+
+            textureCoordBuffer = constructVertexBuffer(textureC);
+
+            indexBuffer = constructIndexBuffer([0, 1, 2, 0, 2, 3]);
+        }
+
+        var mvMatrix = mat4.create();
+        var pMatrix = mat4.create();
+
+        var xPos = 0.0;
+        var yPos = 0.0;
+        var zPos = 0.0;
+
+        //texture loading
+        function initTexture(gl, fileName) {
+            let myTexture;
+            myTexture = gl.createTexture();
+            myTexture.image = new Image();
+            myTexture.image.crossOrigin = "anonymous";
+            myTexture.image.onload = function () {
+                handleLoadedTexture(myTexture, gl) // this is a callback
+            };
+
+            myTexture.image.src = fileName;
+
+            return myTexture
+        }
+
+        function handleLoadedTexture(texture, gl) {
+            gl.bindTexture(gl.TEXTURE_2D, texture); // Sets current texture
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); // Flip loaded image vertically (to match local coordinate system)
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texture.image); // Load image to the texture space
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST); // Scaling things
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.bindTexture(gl.TEXTURE_2D, null); // set current texture to null (good practice)
+        }
+
+        function drawTexture(texture, zValue, movementAmount) {
+            mat4.identity(mvMatrix);
+
+            //transformation for parralax effect
+
+            //old code uses rotation
+            //mat4.rotate(mvMatrix, degToRad(rotY * movementAmount), [0, 1, 0]);
+            //mat4.rotate(mvMatrix, degToRad(rotX * movementAmount), [1, 0, 0]);
+
+            //new version use translation with better performances
+            mat4.translate(mvMatrix, [rotY * movementAmount / 1000, rotX * movementAmount / 1000, zPos - zValue]);
+
+            gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+
+            gl.activeTexture(gl.TEXTURE0); // Texture 0
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.uniform1i(shaderProgram.samplerUniform, 0);
+
+            gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+        }
+
+        function drawScene() {
+            requestAnimFrame(drawScene);
+
+            gl.clearColor(0.0, 0.0, 0.0, 1.0);
+            gl.enable(gl.DEPTH_TEST); // Only the visible parts are drawn.
+            gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            gl.enable(gl.BLEND); // Enable trasparency
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+            mat4.identity(mvMatrix);
+            mat4.identity(pMatrix);
+            gl.uniform1i(shaderProgram.ubTextUniform, false);
+
+            mat4.translate(mvMatrix, [xPos, yPos, zPos + 0.1]);
+
+            gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+            gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+            gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, 3, gl.FLOAT, false, 0, 0);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, textureCoordBuffer);
+            gl.vertexAttribPointer(shaderProgram.textureCoordAttribute, 2, gl.FLOAT, false, 0, 0);
+
+            /*Background*/
+            gl.activeTexture(gl.TEXTURE0); // Texture 0
+            gl.bindTexture(gl.TEXTURE_2D, texture0);
+            gl.uniform1i(shaderProgram.samplerUniform, 0);// Last argument is texture number
+
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+            gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+
+            /*1st texture layer*/
+            drawTexture(texture1, 0.1, Layer1SpeedFactor); //lac
+            /*2nd texture layer*/
+            drawTexture(texture2, 0.2, Layer2SpeedFactor); //ville
+            /*3rd texture layer*/
+            drawTexture(texture3, 0.3, Layer3SpeedFactor); //chateau
+            /*4rd texture layer*/
+            drawTexture(texture4, 0.4, Layer4SpeedFactor); //logo
+        }
+
+        //mouse move
+        var rotX = 0;
+        var rotY = 0;
+        var mousePos;
+        function handleMouseMove(event) {
+            event = event || window.event;
+            mousePos = { x: event.clientX, y: event.clientY };
+            dX = mousePos.x - (gl.viewportWidth / 2);
+            dY = mousePos.y - (gl.viewportHeight / 2);
+
+            rotX = (dY / 300) * GlobalMouseSpeed;
+            rotY = (dX / 300) * GlobalMouseSpeed;
+        }
+
+        var texture0;
+        var texture1;
+        var texture2;
+        var texture3;
+        var texture4;
+        var gl;
+        function initWebGL() {
+            let canvas = document.getElementById("canvas-exercice");
+            try {
+                gl = canvas.getContext("experimental-webgl");
+                gl.viewportWidth = canvas.width;
+                gl.viewportHeight = canvas.height;
+            } catch (e) {
+                alert(e);
+            }
+            if (!gl) {
+                alert("Could not initialise WebGL.");
+
+            }
+
+            canvas.onmousemove = handleMouseMove;
+
+            initShaders(gl);
+            initShaderParameters();
+            initBuffers();
+            texture0 = initTexture(gl, "chateau0.png"); // Montagnes + ciel
+            texture1 = initTexture(gl, "chateau1.png"); // Lac
+            texture2 = initTexture(gl, "chateau2.png"); // Ville
+            texture3 = initTexture(gl, "chateau3.png"); // Chateau
+            texture4 = initTexture(gl, "chateau4.png"); // Text
+
+            drawScene();
+        }
+
+        //for debug only, updates the parameters numbers from html forms
+        function updateVars() {
+            GlobalMouseSpeed = document.getElementById("globalSpeedOnMouseCapture").value;
+            Layer1SpeedFactor = document.getElementById("layer1speed").value;
+            Layer2SpeedFactor = document.getElementById("layer2speed").value;
+            Layer3SpeedFactor = document.getElementById("layer3speed").value;
+            Layer4SpeedFactor = document.getElementById("layer4speed").value;
+            GlobalGyroSpeed = document.getElementById("gyroGlobal").value;
+        }
+
+        //gyroscope move on mobile //24.11.2019 works on chrome only
+        let gyroscope = new Gyroscope({ frequency: 60 });
+
+        gyroscope.addEventListener('reading', e => {
+            rotX = (gyroscope.y / 300) * GlobalGyroSpeed;
+            rotY = (gyroscope.x / 300) * GlobalGyroSpeed;
+        });
+        gyroscope.start();
+
+    </script>
+</head>
+
+<body onload="initWebGL();" style="background-color: dimgray;">
+    <canvas id="canvas-exercice" style="border: none;" width="1280" height="656"></canvas>
+    <div id="vars">
+        <table>
+            <tr>
+                <td>Global mouse speed</td>
+                <td><input type="text" id="globalSpeedOnMouseCapture" onchange="updateVars()" value="1"></td>
+            </tr>
+            <tr>
+                <td>Layer 1 speed (lac)</td>
+                <td><input type="text" id="layer1speed" onchange="updateVars()" value="2"></td>
+            </tr>
+            <tr>
+                <td>Layer 2 speed (ville)</td>
+                <td><input type="text" id="layer2speed" onchange="updateVars()" value="0.65"></td>
+            </tr>
+            <tr>
+                <td>Layer 3 speed (chateau)</td>
+                <td><input type="text" id="layer3speed" onchange="updateVars()" value="0.4"></td>
+            </tr>
+            <tr>
+                <td>Layer 4 speed (logo)</td>
+                <td><input type="text" id="layer4speed" onchange="updateVars()" value="0.15"></td>
+            </tr>
+            <tr>
+                <td>gyroscope speed</td>
+                <td><input type="text" id="gyroGlobal" onchange="updateVars()" value="220"></td>
+            </tr>
+        </table>
+    </div>
+
+    <script type="text/javascript">
+        updateVars();
+    </script>
+</body>
+</html>
